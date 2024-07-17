@@ -1,0 +1,105 @@
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+name: CI-CD Prod
+
+jobs:
+  push-ecr:
+    permissions:
+      id-token: write
+      contents: read
+    name: Build, Push ECR, & Create PR
+    runs-on: ubuntu-latest
+    outputs:
+      image-date: ${{ steps.date.outputs.date }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v2
+        with:
+          persist-credentials: false
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 18
+
+      - name: Install Dependencies
+        run: npm install
+
+      - name: Run Unit tests
+        run: npm run test
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v1
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ vars.AWS_REGION }}
+
+      - name: Login to Amazon ECR
+        id: login-ecr
+        uses: aws-actions/amazon-ecr-login@v2
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v2
+        
+      - name: Get current date
+        id: date
+        run: echo "::set-output name=date::$(date +'%Y-%m-%d-%H-%M-%S')"
+
+      - name: Build and push
+        uses: docker/build-push-action@v3
+        with:
+          file: Dockerfile
+          context: .
+          tags: ${{ steps.login-ecr.outputs.registry }}/${{ vars.REPO_NAME }}:${{ steps.date.outputs.date }}-prod
+          push: true
+
+      # Create the PR
+      - uses: actions/create-github-app-token@v1
+        id: app-token
+        with:
+          app-id: ${{ vars.APP_ID }}
+          private-key: ${{ secrets.APP_ID_PRIVATE_KEY }}
+          owner: ${{ github.repository_owner }}
+          repositories: "pattern50-gitops"
+
+      - uses: actions/checkout@v4
+        with:
+          repository: Pattern50-LLC/pattern50-gitops
+          ref: main
+          token: ${{ steps.app-token.outputs.token }}
+      
+      - name: Update deployment.yaml
+        id: pr
+        uses: fjogeleit/yaml-update-action@main
+        with:
+          token: ${{ steps.app-token.outputs.token }}
+          
+          valueFile: 'email-service/prod/deployment.yaml'
+          propertyPath: 'spec.template.spec.containers[0].image'
+          value: ${{ steps.login-ecr.outputs.registry }}/${{ vars.REPO_NAME }}:${{ steps.date.outputs.date }}-prod
+          
+          commitChange: true
+          branch: "email-service-prod-pr"
+          message: "Email service prod - update deployment"
+          
+          createPR: true
+          title: "Email service prod - update deployment"
+          targetBranch: main
+          repository: Pattern50-LLC/pattern50-gitops
+          masterBranchName: main
+          labels: "automerge"
+      - name: print PR Info
+        id: pr_info
+        run: | 
+            pr_number=$(echo ${{steps.pr.outputs.pull_request}} | grep -oP 'number:\K\d+')
+            echo "::set-output name=pr_number::$pr_number"
+            
+      - id: automerge
+        name: automerge pull request
+        uses: "pascalgn/automerge-action@v0.16.2"
+        env:
+          GITHUB_TOKEN: ${{ steps.app-token.outputs.token }}
+          PULL_REQUEST: Pattern50-LLC/pattern50-gitops/${{steps.pr_info.outputs.pr_number}}

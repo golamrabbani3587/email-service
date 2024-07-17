@@ -1,0 +1,21 @@
+version: '3.8'
+networks:
+    global_network:
+        external: true
+services:
+    session_service:
+        restart: always
+        ports:
+            - '3009:3009'
+        build:
+            context: .
+            dockerfile: Dockerfile
+        environment:
+            - NODE_ENV
+            - DEBUG
+            - MONGODB_URL
+            - RMQ_URL
+            - APP_PORT
+            - SERVER_TYPE
+        networks:
+            - global_network
